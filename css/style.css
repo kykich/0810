@@ -420,6 +420,13 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
     border-radius: 9px;
     padding: 6px 10px;
     background: #f7f8fc;
+    /* Карточка модели НЕ растягивается на всю ширину строки: её размер —
+       по содержимому (имя модели + ряд параметров), но не более 100%.
+       Без этого широкий ряд параметров раздувал карточку на пол-экрана. */
+    flex: 0 1 auto;
+    width: max-content;
+    max-width: 100%;
+    align-self: flex-start;
 }
 .model-ctrl.active {
     border-color: var(--accent);
@@ -453,13 +460,16 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 }
 .model-ctrl.inactive { opacity: .55; filter: grayscale(.4); }
 /* Ряд числовых параметров генерации в карточке модели:
-   temp / top-p / rep / max_tokens / ctx. Переносим при нехватке ширины. */
+   temp / top-p / rep / max_tokens / ctx. Переносим при нехватке ширины.
+   Ширины полей уменьшены, а сам ряд ограничен по максимальной ширине,
+   чтобы карточка модели оставалась компактной и НЕ занимала всё окно. */
 .model-params {
     flex: 1 1 100%;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 10px;
+    max-width: 460px;
 }
 .model-param {
     display: flex;
