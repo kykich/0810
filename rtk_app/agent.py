@@ -153,12 +153,23 @@ class Agent:
         self._rebuild_sources()
 
     def _rebuild_sources(self):
-        """Пересобирает список источников с учётом локальной модели."""
+        """Пересобирает список источников с учётом локальной модели.
+
+        ВАЖНО: метод должен быть ИДЕМПОТЕНТНЫМ. При каждом вызове берём
+        БАЗОВЫЙ набор источников (кастомный — без глобальных SOURCES) и
+        ОТБРАСЫВАЕМ из него любую ранее добавленную локальную модель, после
+        чего добавляем локальную ровно один раз (если она включена). Иначе
+        повторные вызовы (start/status/set локальной модели) ДОБАВЛЯЛИ бы
+        «Local» заново — карточка модели дублировалась в селекторе.
+        """
         # Кастомный набор источников не подмешивает глобальные SOURCES.
         if self.sources and self.sources != list(SOURCES):
-            srcs = list(self.sources)
+            base = list(self.sources)
         else:
-            srcs = list(SOURCES)
+            base = list(SOURCES)
+        # Убираем прежнюю локальную запись (провайдер "local"), чтобы не
+        # накопить дубликаты.
+        srcs = [s for s in base if s[0] != "local"]
         if self._local_url:
             model_field = "%s|%s" % (self._local_url, self._local_model)
             srcs.append(("local", model_field, self._local_label,
