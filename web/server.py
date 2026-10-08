@@ -23,7 +23,15 @@ JSON-API:
     GET  /api/model         - список моделей, которые обслуживает агент
     GET  /api/session       - сохранённая история + стратегия + facts + ветки
     POST /api/ask           - {question, models[], max_tokens?, compact?,
-                               strategy?} -> ответ
+                               strategy?} -> ответ.
+                               models[] — выбранные модели; у каждой можно
+                               задать СВОИ параметры генерации:
+                               {label, temperature?, top_p?,
+                                repetition_penalty?, max_tokens?,
+                                context_window?}. Поля опциональны; null/
+                               отсутствие — параметр не применяется.
+                               Общий max_tokens запроса — фолбэк для моделей
+                               без собственного max_tokens.
     POST /api/newchat       - начать новый разговор (очистить историю)
     POST /api/compact       - {enabled, keep} -> настройки сжатия (summary)
     POST /api/compact_summary - {keep} -> дописать вытесненное в summary
