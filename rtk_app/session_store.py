@@ -412,16 +412,29 @@ class SessionStore:
             self.memory_use_count = {"working": 0, "longterm": 0}
             self.profiles = []
             self.active_profile = None
+            # Был ли файл профилей РАНЬШЕ (до этого запуска). Это отличает
+            # «приложение запускается впервые» (файла нет вообще) от
+            # «пользователь осознанно оставил список профилей пустым».
+            profiles_file_existed = bool(
+                self.profiles_path and os.path.isfile(self.profiles_path))
             # Сначала пробуем загрузить профили.
             if self._load_profiles_locked():
                 return
-            # Профилей нет — читаем старую одиночную сессию (если есть) и,
-            # ТОЛЬКО если в ней реально что-то сохранено, переносим её в
-            # один профиль (миграция). Пустой файл профиля не создаёт.
+            # Профилей в файле нет (или файла ещё не было). Различаем два
+            # случая по тому, существовал ли файл профилей РАНЬШЕ:
+            #   * файла не было  — первый запуск новой версии: читаем старую
+            #                      одиночную сессию и, ЕСЛИ в ней есть данные,
+            #                      переносим их в один профиль (миграция);
+            #   * файл был       — пользователь осознанно оставил список
+            #                      профилей пустым: персону НЕ создаём, но
+            #                      «плоские» данные (память/диалог) читаем,
+            #                      чтобы не потерять состояние.
             self._legacy_profile_attrs = {}
             if self.path and os.path.isfile(self.path):
                 self._load_legacy_session_locked()
-            if self._legacy_has_content():
+            if not profiles_file_existed and self._legacy_has_content():
+                # Единоразовая миграция старого формата (без профилей) в
+                # один профиль «default».
                 legacy_attrs = self._legacy_profile_attrs
                 self.profiles = [self._new_profile_dict(
                     "default",
