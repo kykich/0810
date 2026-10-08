@@ -7,6 +7,15 @@
    - Вверху выбраны модели (кнопки, несколько) и температура для каждой.
    - Запрос уходит на сервер вместе с выбором моделей и температур.
 */
+/* ---- Подключение модулей (рефакторинг на ES-модули) ------------- */
+import { initSections, autoFitSide } from "./features/sections.js";
+import { bus, registry } from "./core/bus.js";
+// Общие DOM-утилиты берём из зависимого модуля core/dom.js
+// (одна реализация на всё приложение, без дублирования).
+import { esc, fmt } from "./core/dom.js";
+// Сетевой транспорт — общий модуль core/api.js.
+import { apiGet, apiPost } from "./core/api.js";
+
 (function () {
     "use strict";
 
@@ -63,11 +72,18 @@
     // ------------------------------------------------------------------
     // Хелперы
     // ------------------------------------------------------------------
-    function esc(s) {
-        return String(s == null ? "" : s)
-            .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    // --- Делегатор к модулю секций ------------------------------------
+    // Сама логика сворачивания/автоподбора ширины живёт в
+    // features/sections.js. Раньше refreshSections() была локальной
+    // функцией; теперь это тонкая обёртка над функцией из модуля,
+    // сохранённой в sectionsRefresh (см. вызов initSections() ниже).
+    // Объявлена как function declaration — всплывает, поэтому доступна
+    // из всех функций файла ещё до выполнения нижнего блока.
+    var sectionsRefresh = null;
+    function refreshSections() {
+        if (sectionsRefresh) sectionsRefresh();
     }
+
 
     function setStatus(message, kind) {
         statusEl.hidden = !message;
@@ -948,9 +964,6 @@
     var tokHist = 0;
 
     // Форматирует число с разделителями тысяч.
-    function fmt(n) {
-        return (n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-    }
 
     function resetTokenStats() {
         tokIn = 0;
@@ -1024,7 +1037,7 @@
     function ensureModel(label) {
         if (!label) return null;
         if (!modelStats[label]) {
-            modelStats[label] = { input: 0, output: 0, cost: 0, hasCost: false };
+            modelStats[label] = { input: 0, output: 0, cost: 0, hasCost: false, tps: 0, local: false };
         }
         return modelStats[label];
     }
@@ -1042,13 +1055,17 @@
                 st.cost += parseFloat(a.cost);
                 st.hasCost = true;
             }
+            // Скорость генерации (токенов/с) и признак локальной модели:
+            // для локального источника показываем производительность.
+            if (a.tps != null && !isNaN(parseFloat(a.tps))) st.tps = parseFloat(a.tps);
+            if (a.local) st.local = true;
         });
         renderModelStats();
     }
 
     function resetModelStats() {
         Object.keys(modelStats).forEach(function (k) {
-            modelStats[k] = { input: 0, output: 0, cost: 0, hasCost: false };
+            modelStats[k] = { input: 0, output: 0, cost: 0, hasCost: false, tps: 0, local: false };
         });
         renderModelStats();
     }
@@ -1067,15 +1084,21 @@
         tsModels.innerHTML = "";
         var any = false;
         labels.forEach(function (label) {
-            var st = modelStats[label] || { input: 0, output: 0, cost: 0, hasCost: false };
+            var st = modelStats[label] || { input: 0, output: 0, cost: 0, hasCost: false, tps: 0, local: false };
             var tot = st.input + st.output;
             if (tot > 0) any = true;
             var li = document.createElement("li");
             li.className = "tstat-model";
             var cost = "";
             if (st.hasCost) cost = " · ¥" + st.cost.toFixed(6);
+            // Скорость генерации для локальной модели (токенов/с).
+            var speed = "";
+            if (st.local && st.tps > 0) {
+                speed = ' <span class="tm-speed" title="скорость генерации">'
+                    + st.tps.toFixed(1) + ' ток/с</span>';
+            }
             li.innerHTML = '<span class="tm-name">' + esc(label) + '</span>' +
-                '<span class="tm-val">' + fmt(st.input) + ' / ' + fmt(st.output) + cost + '</span>';
+                '<span class="tm-val">' + fmt(st.input) + ' / ' + fmt(st.output) + cost + speed + '</span>';
             tsModels.appendChild(li);
         });
         // Если ни одна модель ещё не отвечала — подсказка
@@ -2289,6 +2312,20 @@
         if (localState.models && localState.models.length) {
             parts.push("моделей найдено: " + localState.models.length);
         }
+        // ЗАДАЧА 4: статистика локальной модели — видеопамять
+        // (занято/всего), размер модели и параметры запуска.
+        var rt2 = localState.runtime || {};
+        if (localState.running && rt2) {
+            if (rt2.vram_used_mb) {
+                var vtot = rt2.vram_total_mb ? ' / ' + rt2.vram_total_mb : '';
+                parts.push('VRAM ' + rt2.vram_used_mb + vtot + ' МБ');
+            }
+            if (rt2.model_mb) parts.push('модель ' + rt2.model_mb + ' МБ');
+            var pp = rt2.params || {};
+            if (pp.ngl !== undefined) parts.push('ngl=' + pp.ngl);
+            if (pp.ctx) parts.push('ctx=' + pp.ctx);
+            if (pp.threads) parts.push('threads=' + pp.threads);
+        }
         if (extraText) parts.push(extraText);
         localStatusEl.textContent = parts.join(" · ");
         localStatusEl.className = "local-status " +
@@ -2391,20 +2428,15 @@
         if (extra) {
             Object.keys(extra).forEach(function (k) { payload[k] = extra[k]; });
         }
-        return fetch("/api/local", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (d) { if (d) applyLocalState(d); if (done) done(d); return d; })
-        .catch(function () { if (done) done(null); return null; });
+        // Единый транспорт из core/api.js: обработка HTTP-ошибок в одном месте.
+        return apiPost("/api/local", payload)
+            .then(function (d) { if (d) applyLocalState(d); if (done) done(d); return d; })
+            .catch(function () { if (done) done(null); return null; });
     }
 
     // Загружает состояние блока при старте страницы.
     function initLocal() {
-        fetch("/api/local")
-            .then(function (r) { return r.ok ? r.json() : null; })
+        apiGet("/api/local")
             .then(function (d) { if (d) applyLocalState(d); })
             .catch(function () {});
     }
@@ -2496,180 +2528,45 @@
             });
         });
 
-    // Сворачиваемые секции левой колонки
     // ------------------------------------------------------------------
-    // Каждый блок левой колонки (.side-sec) прячется под заголовком-кнопкой
-    // (.side-sec-head): клик — развернуть/свернуть. Состояние сворачивания
-    // запоминается в localStorage. Заголовок СВЁРНУТОГО блока, внутри
-    // которого ЕСТЬ активное использование (JS ставит класс .in-use),
-    // заливается оливковым; неиспользуемый — под цвет фона колонки.
-
-﻿    var SECTIONS_KEY = "ds-side-sections";
-
-    // Набор «активности» по каждой секции — функция возвращает true, если
-    // внутри блока есть что-то реально задействованное (в т.ч. при свёрнутом
-    // блоке). Так пользователь видит оливковый заголовок и понимает, что
-    // внутри «что-то работает», даже не разворачивая блок.
-    function sectionInUse(name) {
-        try {
-            switch (name) {
-                case "strategy":
-                    return !!(strategyState && strategyState.strategy &&
-                              strategyState.strategy !== "none");
-                case "task":
-                    return !!(taskState && taskState.active);
-                case "profiles":
-                    return !!(profilesState && profilesState.active);
-                case "invariants":
-                    return !!(invState && invState.invariants &&
-                              invState.invariants.length);
-                                case "mcp":
-                    return !!(mcpState && (mcpState.enabled || mcpState.composition));
-                case "rag":
-                    // RAG активен, если включён И в индексе есть фрагменты.
-                    return !!(ragState && ragState.enabled && ragState.available);
-                case "local":
-                    // Активность: локальная модель включена или сервер запущен.
-                    return !!(localState &&
-                              (localState.enabled || localState.running));
-                case "summary":
-                    return !!(compactState && parseInt(compactState.keep, 10) > 0);
-                case "memory":
-                    // Активность, если в редактируемых слоях памяти есть строки.
-                    var w = memWorkingBox ? memWorkingBox.querySelectorAll(".mem-row").length : 0;
-                    var l = memLongtermBox ? memLongtermBox.querySelectorAll(".mem-row").length : 0;
-                    return (w + l) > 0;
-                default:
-                    return false;
-            }
-        } catch (e) {
-            return false;
-        }
-    }
-
-    // Пересчитывает класс .in-use у всех секций (оливковый заголовок).
-    function refreshSections() {
-        var secs = document.querySelectorAll(".side-sec");
-        for (var i = 0; i < secs.length; i++) {
-            var nm = secs[i].dataset.section;
-            secs[i].classList.toggle("in-use", sectionInUse(nm));
-        }
-    }
-
-    // Сохраняет/загружает состояние сворачивания секций (в localStorage).
-    function readCollapsedMap() {
-        try {
-            return JSON.parse(localStorage.getItem(SECTIONS_KEY) || "{}") || {};
-        } catch (e) { return {}; }
-    }
-    function writeCollapsedMap(map) {
-        try { localStorage.setItem(SECTIONS_KEY, JSON.stringify(map)); } catch (e) {}
-    }
-
-    // Инициализация сворачиваемых секций: клик по заголовку + восстановление
-    // ранее сохранённого состояния.
-    (function initSections() {
-        var secs = document.querySelectorAll(".side-sec");
-        var saved = readCollapsedMap();
-        for (var i = 0; i < secs.length; i++) {
-            (function (sec) {
-                var name = sec.dataset.section;
-                var head = sec.querySelector(".side-sec-head");
-                if (!head) return;
-                // Восстанавливаем состояние: по умолчанию — развёрнуто.
-                var collapsed = !!(saved[name]);
-                sec.classList.toggle("collapsed", collapsed);
-                head.setAttribute("aria-expanded", collapsed ? "false" : "true");
-                head.addEventListener("click", function () {
-                    var nowCollapsed = !sec.classList.contains("collapsed");
-                    sec.classList.toggle("collapsed", nowCollapsed);
-                    head.setAttribute("aria-expanded", nowCollapsed ? "false" : "true");
-                    var m = readCollapsedMap();
-                    m[name] = nowCollapsed;
-                    writeCollapsedMap(m);
-                    refreshSections();
-                });
-            })(secs[i]);
-        }
-        refreshSections();
-    })();
-
-    // Инициализация интерфейса.
-    renderModelStats();
-        // Настраиваем MCP (вкл/выкл + модель) и проверяем его статус.
-    initMcp();
-    // Настраиваем RAG (вкл/выкл, папка PDF, top-k) и читаем статус индекса.
-    initRag();
-    // Настраиваем ЛОКАЛЬНУЮ модель (llama.cpp/Ollama) и читаем её состояние.
-    initLocal();
-    renderModelsTitle();
-    resetContextStats();
-    // Показываем панели facts/веток согласно активной стратегии.
-    syncStrategyUI();
-    renderProfiles({ profiles: [], active: null });
-    renderFacts({});
-    renderBranches({ branches: [{ name: "main", size: 0 }], active_branch: 0 });
-    renderMemory({ short: { items: 0, branches: 1 },
-                   working: {}, longterm: {} });
-    renderTask({ active: false, stage: "planning", paused: false,
-                 stages: ["planning", "execution", "validation", "done"],
-                 stage_labels: { planning: "планирование", execution: "выполнение",
-                                 validation: "проверка", done: "завершено" } });
-    // Инварианты: рисуем пустой список с категориями по умолчанию; реальные
-    // данные придут из /api/session (loadSession).
-    renderInvariants({ invariants: [],
-                       categories: [ { id: "architecture", label: "архитектура" },
-                                     { id: "tech", label: "технические решения" },
-                                     { id: "stack", label: "стек и стандарт" },
-                                     { id: "business", label: "бизнес-правила" } ] });
+    // СЕКЦИИ (сворачивание) и автоподбор ширины панели
     // ------------------------------------------------------------------
-    // Автоподгонка ширины левой колонки
-    // ------------------------------------------------------------------
-    // Левая колонка подстраивается под ширину самого широкого своего блока
-    // (тексты, поля, кнопки), но не выходит за пределы [MIN, MAX].
-    // Значения ширины задаются через inline-style, из-за чего нельзя
-    // использовать fixed CSS-значения (min/max-width) — логика зависит от
-    // реального scrollWidth и меняется при изменении содержимого.
-    (function autoFitSide() {
-        var side = document.querySelector(".side");
-        if (!side) return;
-        var MIN = 180, MAX = 380;
-
-        function measure() {
-            var widest = MIN;
-            // Измеряем каждую дочернюю панель в режиме natural-width.
-            var kids = side.children;
-            for (var i = 0; i < kids.length; i++) {
-                var el = kids[i];
-                // Скрытые и «обёртки» измеряем как есть, чтобы не пропустить.
-                var prevWidth = el.style.width;
-                var prevWhite = el.style.whiteSpace;
-                el.style.width = "max-content";
-                el.style.whiteSpace = "nowrap";
-                var w = el.scrollWidth;
-                el.style.width = prevWidth;
-                el.style.whiteSpace = prevWhite;
-                if (w > widest) widest = w;
-            }
-            // + горизонтальные отступы колонки (padding) и небольшой запас.
-            var cs = window.getComputedStyle(side);
-            var pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
-            var target = Math.ceil(widest + pad + 4);
-            if (target < MIN) target = MIN;
-            if (target > MAX) target = MAX;
-            side.style.width = target + "px";
-        }
-
-        measure();
-        // Пересчитываем при изменении размеров окна и после полной загрузки
-        // (когда уже готовы данные о моделях и панели получили своё содержимое).
-        window.addEventListener("resize", measure);
-        window.addEventListener("load", measure);
-        // Подстраховка/отложенный вызов, поскольку содержимое подгружается
-        // асинхронно из /api/* (модели, профили, память, задача и т.д.).
-        setTimeout(measure, 300);
-        setTimeout(measure, 1000);
-    })();
+    // Сворачивание блоков левой колонки (.side-sec) и автоподбор ширины
+    // .side вынесены в ОТДЕЛЬНЫЙ модуль features/sections.js (рефакторинг
+    // на ES-модули). Здесь лишь ПОДКЛЮЧАЕМ его и передаём функцию-геттер
+    // состояния «использования» секций (dependency injection).
+    sectionsRefresh = initSections(function () {
+        return {
+            strategy: !!(strategyState && strategyState.strategy &&
+                         strategyState.strategy !== "none"),
+            task: !!(taskState && taskState.active),
+            profiles: !!(profilesState && profilesState.active),
+            invariants: !!(invState && invState.invariants &&
+                           invState.invariants.length),
+            mcp: !!(mcpState && (mcpState.enabled ||
+                                 mcpState.composition_running)),
+            rag: !!(ragState && ragState.enabled && ragState.available),
+            local: !!(localState && (localState.enabled ||
+                                     localState.running)),
+            summary: !!(compactState && parseInt(compactState.keep, 10) > 0),
+            memory: (function () {
+                var w = memWorkingBox ?
+                    memWorkingBox.querySelectorAll(".mem-row").length : 0;
+                var l = memLongtermBox ?
+                    memLongtermBox.querySelectorAll(".mem-row").length : 0;
+                return (w + l) > 0;
+            })(),
+        };
+    });
+    autoFitSide();
+    // Регистрируем модуль секций в общем реестре (подключаемая
+    // архитектура): другие модули могут получить его через
+    // registry.get("sections") или попросить перерисовать через
+    // bus.emit("sections:refresh").
+    registry.add("sections", { refresh: sectionsRefresh });
+    // Сигнал шине: приложение инициализировано. Модули-плагины могут
+    // подписаться на это событие для собственной инициализации.
+    bus.emit("app:ready", {});
 
     loadSession();
 })();

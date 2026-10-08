@@ -575,6 +575,16 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 }
 .tstat-model .tm-name { color: #2b3350; font-weight: 700; }
 .tstat-model .tm-val { color: #4a5568; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Скорость генерации ЛОКАЛЬНОЙ модели (токенов/с) — акцентный «бейдж» в
+   строке модели, чтобы производительность была заметна рядом с токенами. */
+.tstat-model .tm-speed {
+    color: #1f7a46;
+    font-weight: 700;
+    background: #e2f5e9;
+    border-radius: 4px;
+    padding: 0 4px;
+    font-size: .68rem;
+}
 .tstat-model.empty { color: #a1a8bb; font-style: italic; justify-content: flex-start; }
 
 .tstat-totals {
@@ -1659,6 +1669,11 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
     flex-direction: column;
     border-radius: 7px;
     overflow: hidden;
+    /* Секции НЕ сжимаются при нехватке высоты колонки: каждая сохраняет
+       свою натуральную высоту по содержимому, а прокрутка выполняется
+       всей колонкой (.side, overflow-y:auto). Без этого flex-элементы
+       сжимались бы и содержимое секций накладывалось/обрезалось. */
+    flex: 0 0 auto;
     /* Оливковый цвет фона кнопки-заголовка, когда блок «в использовании». */
     --olive: #6b7a3a;
     --olive-dark: #55622c;
@@ -1722,6 +1737,12 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
     flex-direction: column;
     gap: 6px;
     padding: 8px 2px 4px;
+    /* Содержимое тела тоже не сжимается: при нехватке высоты колонка
+       прокручивается целиком, а не деформирует блоки внутри секции. */
+    flex: 0 0 auto;
+}
+.side-sec-body > * {
+    flex: 0 0 auto;
 }
 
 /* ===== Источники (RAG) в карточке ответа =====
