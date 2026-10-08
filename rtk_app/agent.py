@@ -448,6 +448,8 @@ class Agent:
                                  single["completion_tokens"]))
             node["dur"] = round(single["elapsed"], 2)
             node["dur_ms"] = int(single["elapsed"] * 1000)
+            node["tps"] = single.get("tps", 0)
+            node["local"] = (provider == "local")
             print("[TRACE]   <- результат %r: ok=%s" % (label, single["ok"]),
                   flush=True)
             input_total += single["prompt_tokens"]
@@ -483,6 +485,9 @@ class Agent:
                         "temperature": temperature,
                         "input": single["prompt_tokens"],
                         "output": single["completion_tokens"],
+                        "tps": single.get("tps", 0),
+                        "elapsed": round(single.get("elapsed", 0), 2),
+                        "local": (provider == "local"),
                         "cost": self._estimate_cost(provider, model,
                                                     single["prompt_tokens"],
                                                     single["completion_tokens"]),
@@ -506,6 +511,9 @@ class Agent:
                 "temperature": temperature,
                 "input": single["prompt_tokens"],
                 "output": single["completion_tokens"],
+                "tps": single.get("tps", 0),
+                "elapsed": round(single.get("elapsed", 0), 2),
+                "local": (provider == "local"),
                 "cost": self._estimate_cost(provider, model,
                                             single["prompt_tokens"],
                                             single["completion_tokens"]),
@@ -1357,12 +1365,22 @@ class Agent:
                 res = gigachat.chat(messages, model=model,
                                     temperature=temperature,
                                     max_tokens=max_tokens)
+            elapsed = time.perf_counter() - t0
+            p_tok = int(res.get("prompt_tokens", 0) or 0)
+            c_tok = int(res.get("completion_tokens", 0) or 0)
+            # СКОРОСТЬ ГЕНЕРАЦИИ (токенов/с) — отношение ВЫВОДНЫХ токенов
+            # к длительности запроса. Для локальной модели особенно показательно
+            # (оценка производительности GPU/CPU).
+            tps = (c_tok / elapsed) if elapsed > 0 and c_tok else 0.0
             return {
                 "ok": True,
                 "content": res.get("content", ""),
-                "prompt_tokens": int(res.get("prompt_tokens", 0) or 0),
-                "completion_tokens": int(res.get("completion_tokens", 0) or 0),
-                "elapsed": time.perf_counter() - t0,
+                "prompt_tokens": p_tok,
+                "completion_tokens": c_tok,
+                "elapsed": elapsed,
+                "tps": round(tps, 1),
+                "provider": provider,
+                "model": model,
                 "error": None,
             }
         except Exception as exc:
@@ -1372,6 +1390,9 @@ class Agent:
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
                 "elapsed": time.perf_counter() - t0,
+                "tps": 0.0,
+                "provider": provider,
+                "model": model,
                 "error": str(exc),
             }
 

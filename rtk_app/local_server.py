@@ -42,6 +42,8 @@ __all__ = [
     "LocalServerManager",
     "scan_root",
     "probe_vram_mb",
+    "probe_vram_used_mb",
+    "probe_vram_total_mb",
     "suggest_params",
     "build_command",
     "server_url",
@@ -164,6 +166,32 @@ def scan_root(root):
 # ---------------------------------------------------------------------------
 # Видеопамять (для автоподбора -ngl)
 # ---------------------------------------------------------------------------
+def _nvidia_query(field):
+    """Читает одну метрику по всем NVIDIA-GPU через nvidia-smi (сумма, МБ).
+
+    field — имя поля в терминах nvidia-smi (например, "memory.free" или
+    "memory.used"). Возвращает суммарное значение по всем GPU в МБ либо
+    None, если nvidia-smi недоступен/ошибка. Используется и для автоподбора
+    -ngl (свободная память), и для статистики блока локальной модели
+    (занятая видеопамять).
+    """
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.check_output(
+            [exe, "--query-gpu=" + field, "--format=csv,noheader,nounits"],
+            stderr=subprocess.DEVNULL, timeout=10)
+        total = 0
+        for line in out.decode("utf-8", "replace").splitlines():
+            line = line.strip()
+            if line.isdigit():
+                total += int(line)
+        return total if total else None
+    except Exception:
+        return None
+
+
 def probe_vram_mb():
     """Свободная видеопамять GPU (МБ) через nvidia-smi, либо None.
 
@@ -171,21 +199,26 @@ def probe_vram_mb():
     nvidia-smi нет/недоступен — None (тогда -ngl подбирается без учёта
     видеопамяти, по умолчанию «все слои»).
     """
-    exe = shutil.which("nvidia-smi")
-    if not exe:
-        return None
-    try:
-        out = subprocess.check_output(
-            [exe, "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-            stderr=subprocess.DEVNULL, timeout=10)
-        total = 0
-        for line in out.decode("utf-8", "replace").splitlines():
-            line = line.strip()
-            if line.isdigit():
-                total += int(line)
-        return total or None
-    except Exception:
-        return None
+    return _nvidia_query("memory.free")
+
+
+def probe_vram_used_mb():
+    """ЗАНЯТАЯ видеопамять GPU (МБ) через nvidia-smi, либо None.
+
+    Суммарная используемая память по всем NVIDIA-GPU. Нужна блоку
+    «Локальная модель» для показа, сколько видеопамяти сейчас занято
+    (индикация загрузки модели на GPU). None — nvidia-smi недоступен.
+    """
+    return _nvidia_query("memory.used")
+
+
+def probe_vram_total_mb():
+    """ОБЩАЯ видеопамять GPU (МБ) через nvidia-smi, либо None.
+
+    Суммарная физическая память всех NVIDIA-GPU. Используется вместе с
+    probe_vram_used_mb() для отображения «занято / всего» в интерфейсе.
+    """
+    return _nvidia_query("memory.total")
 
 
 def suggest_params(model_path, vram_free_mb=None):
