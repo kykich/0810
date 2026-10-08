@@ -222,15 +222,70 @@ class Agent:
             return int(config.MAX_TOKENS_MAX)
         return v
 
-    def _selected_sources(self, selected):
-        """Разрешает пользовательский выбор в кортежи источников.
+    def _coerce_top_p(self, value):
+        """Приводит top_p (nucleus sampling) к float в диапазоне config.
 
-        selected — список элементов вида {label, temperature}. Возвращает
-        словарь {label: (source_tuple, temperature_or_None)} только для тех
-        моделей, что реально доступны агенту. Если выборка пуста или не
-        содержит подходящих меток — используются все источники (без явной
-        температуры, т.е. системное значение модели).
+        None/нечисловое — «не передавать». top_p >= 1.0 означает «выключено»,
+        поэтому тоже возвращаем None (не шлём в API значение по умолчанию).
         """
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        if v < config.TOP_P_MIN:
+            v = float(config.TOP_P_MIN)
+        if v > config.TOP_P_MAX:
+            v = float(config.TOP_P_MAX)
+        if v >= 1.0:
+            return None
+        return v
+
+    def _coerce_rep_penalty(self, value):
+        """Приводит repetition_penalty (штраф за повторы) к float.
+
+        None/нечисловое — «не передавать». 1.0 означает «без штрафа» -> None.
+        """
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        if v < config.REP_PENALTY_MIN:
+            v = float(config.REP_PENALTY_MIN)
+        if v > config.REP_PENALTY_MAX:
+            v = float(config.REP_PENALTY_MAX)
+        if abs(v - 1.0) < 1e-9:
+            return None
+        return v
+
+    def _coerce_context_window(self, value):
+        """Приводит context_window (токенов) к int. None/0 — «авто» (None)."""
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            return None
+        if v <= 0:
+            return None
+        if v > config.CONTEXT_WINDOW_MAX:
+            v = int(config.CONTEXT_WINDOW_MAX)
+        return v
+
+    def _selected_sources(self, selected):
+        """Разрешает пользовательский выбор в источники + параметры генерации.
+
+        selected — список элементов вида {label, temperature, top_p,
+        repetition_penalty, max_tokens, context_window}. Возвращает словарь
+        {label: (source_tuple, params)} только для тех моделей, что реально
+        доступны агенту. params — dict с УЖЕ приведёнными к допустимому виду
+        значениями (None означает «не передавать параметр в модель»):
+            {"temperature", "top_p", "repetition_penalty",
+             "max_tokens", "context_window"}.
+        Если выборка пуста или не содержит подходящих меток — используются
+        все источники с параметрами по умолчанию (все None).
+        """
+        default_params = {
+            "temperature": None, "top_p": None, "repetition_penalty": None,
+            "max_tokens": None, "context_window": None,
+        }
         chosen = {}
         if isinstance(selected, list) and selected:
             for opt in selected:
@@ -241,12 +296,21 @@ class Agent:
                 base = self.by_label.get(label)
                 if base is None:
                     continue
-                temp = self._coerce_temperature(
-                    opt.get("temperature") if isinstance(opt, dict) else None)
-                chosen[label] = (base, temp)
+                params = dict(default_params)
+                if isinstance(opt, dict):
+                    params["temperature"] = self._coerce_temperature(
+                        opt.get("temperature"))
+                    params["top_p"] = self._coerce_top_p(opt.get("top_p"))
+                    params["repetition_penalty"] = self._coerce_rep_penalty(
+                        opt.get("repetition_penalty"))
+                    params["max_tokens"] = self._coerce_max_tokens(
+                        opt.get("max_tokens"))
+                    params["context_window"] = self._coerce_context_window(
+                        opt.get("context_window"))
+                chosen[label] = (base, params)
         if not chosen:
             for base in self.sources:
-                chosen[base[2]] = (base, None)
+                chosen[base[2]] = (base, dict(default_params))
         return chosen
 
     def answer(self, question, history=None, selected=None, max_tokens=None,
@@ -427,21 +491,39 @@ class Agent:
         memory_used = {"working": 0, "longterm": 0}
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        mt = self._coerce_max_tokens(max_tokens)
-        mt_note = ("max_tokens=%d" % mt) if mt is not None else "max_tokens=auto"
-
-        for label, (base, temperature) in sources.items():
+        for label, (base, params) in sources.items():
             provider, model, _lbl, cls = base
+            temperature = params.get("temperature")
+            # max_tokens: у каждой модели свой; если не задан индивидуально —
+            # используем глобальное значение запроса (аргумент max_tokens).
+            model_mt = params.get("max_tokens")
+            if model_mt is None:
+                model_mt = self._coerce_max_tokens(max_tokens)
+            top_p = params.get("top_p")
+            rep_pen = params.get("repetition_penalty")
+            ctx_win = params.get("context_window")
             temp_note = ("temperature=%.2f" % temperature
                          if temperature is not None else "temperature=auto")
+            mt_note = ("max_tokens=%d" % model_mt) if model_mt is not None \
+                else "max_tokens=auto"
+            extra_note = ""
+            if top_p is not None:
+                extra_note += " · top_p=%.2f" % top_p
+            if rep_pen is not None:
+                extra_note += " · rep=%.2f" % rep_pen
+            if ctx_win is not None:
+                extra_note += " · ctx=%d" % ctx_win
             node = {"kind": "llm", "model": label,
                     "title": "LLM: %s" % label,
-                    "detail": "отправка… " + temp_note + " · " + mt_note}
+                    "detail": "отправка… " + temp_note + " · " + mt_note
+                              + extra_note}
             trace.append(node)
-            print("[TRACE]   -> вызов модели label=%r %s %s"
-                  % (label, temp_note, mt_note), flush=True)
+            print("[TRACE]   -> вызов модели label=%r %s %s%s"
+                  % (label, temp_note, mt_note, extra_note), flush=True)
             single = self._call_one(provider, model, messages, label, temperature,
-                                    max_tokens=mt)
+                                    max_tokens=model_mt, top_p=top_p,
+                                    repetition_penalty=rep_pen,
+                                    context_window=ctx_win)
             node["ok"] = single["ok"]
             node["detail"] = ("запрос выполнен за %.2f c · ввод %d/вывод %d ток"
                               % (single["elapsed"], single["prompt_tokens"],
@@ -1341,18 +1423,25 @@ class Agent:
                 + completion_tokens * out_price) / 1_000_000.0
 
     def _call_one(self, provider, model, messages, label, temperature=None,
-                  max_tokens=None):
+                  max_tokens=None, top_p=None, repetition_penalty=None,
+                  context_window=None):
         """Вызывает одну конкретную модель через API и фиксирует результат.
 
         Любые ошибки превращаются в "мягкий" результат с признаком ok=False,
         чтобы сбой одной модели не ломал весь агент.
+
+        top_p, repetition_penalty — дополнительные параметры генерации;
+        context_window (токенов) — размер контекстного окна. Для локальной
+        модели context_window передаётся серверу как опция; для облачных он
+        учитывается в статистике (провайдеры сами решают, применять ли его).
         """
         t0 = time.perf_counter()
         try:
             if provider == "deepseek":
                 res = deepseek.chat(self.api_key, messages,
                                     model=model, temperature=temperature,
-                                    max_tokens=max_tokens)
+                                    max_tokens=max_tokens, top_p=top_p,
+                                    repetition_penalty=repetition_penalty)
             elif provider == "local":
                 url, name = parse_local_model_field(model)
                 if not url:
@@ -1360,11 +1449,13 @@ class Agent:
                 res = local_llm.chat(
                     messages, model=name or config.LOCAL_LABEL, base_url=url,
                     api_key=config.LOCAL_API_KEY, temperature=temperature,
-                    max_tokens=max_tokens)
+                    max_tokens=max_tokens, top_p=top_p,
+                    repetition_penalty=repetition_penalty)
             else:
                 res = gigachat.chat(messages, model=model,
                                     temperature=temperature,
-                                    max_tokens=max_tokens)
+                                    max_tokens=max_tokens, top_p=top_p,
+                                    repetition_penalty=repetition_penalty)
             elapsed = time.perf_counter() - t0
             p_tok = int(res.get("prompt_tokens", 0) or 0)
             c_tok = int(res.get("completion_tokens", 0) or 0)
