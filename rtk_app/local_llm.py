@@ -47,12 +47,15 @@ def _estimate_tokens(text):
 
 
 def chat(messages, model=None, base_url=None, api_key=None, temperature=None,
-         max_tokens=None, timeout=None):
+         max_tokens=None, timeout=None, top_p=None, repetition_penalty=None):
     """Отправляет сообщения локальному серверу и возвращает ответ.
 
     Возвращает dict: content, prompt_tokens, completion_tokens — как у
     DeepSeek/GigaChat. Исключения пробрасываются наружу (обрабатываются
     вызывающим кодом так же, как у других провайдеров).
+
+    top_p, repetition_penalty — дополнительные параметры генерации
+    (передаются локальному серверу, если заданы).
     """
     url = _chat_url(base_url)
     payload = {"model": model or config.LOCAL_LABEL,
@@ -61,6 +64,10 @@ def chat(messages, model=None, base_url=None, api_key=None, temperature=None,
         payload["temperature"] = float(temperature)
     if max_tokens is not None:
         payload["max_tokens"] = int(max_tokens)
+    if top_p is not None:
+        payload["top_p"] = float(top_p)
+    if repetition_penalty is not None:
+        payload["repetition_penalty"] = float(repetition_penalty)
     headers = {"Content-Type": "application/json"}
     key = str(api_key or "").strip()
     if key:
@@ -101,3 +108,4 @@ def list_models(base_url=None, timeout=5):
         return [], "HTTP %s" % exc.code
     except Exception as exc:                          # noqa: BLE001
         return [], str(exc)
+

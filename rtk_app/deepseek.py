@@ -1,5 +1,6 @@
 """Клиент для работы с DeepSeek API (chat completions).
-Поддерживает дополнительные настройки генерации: temperature и max_tokens.
+Поддерживает дополнительные настройки генерации: temperature, max_tokens,
+top_p и repetition_penalty.
 """
 import json
 import urllib.request
@@ -9,13 +10,16 @@ from . import config
 __all__ = ["chat"]
 
 
-def chat(api_key, messages, model=None, temperature=None, max_tokens=None):
+def chat(api_key, messages, model=None, temperature=None, max_tokens=None,
+         top_p=None, repetition_penalty=None):
     """Отправляет сообщения, возвращает dict: content, prompt_tokens, completion_tokens.
 
     temperature — float или None; None означает «не передавать» (системное
     значение модели по умолчанию).
     max_tokens — int или None; None означает «не передавать» (лимит модели
     по умолчанию). Если задан — ограничивает число новых токенов ответа.
+    top_p — float или None; nucleus sampling (1.0 — выключено).
+    repetition_penalty — float или None; штраф за повторы (1.0 — без штрафа).
     """
     if not model:
         model = config.DS_MODELS[0]
@@ -28,6 +32,10 @@ def chat(api_key, messages, model=None, temperature=None, max_tokens=None):
         payload["temperature"] = float(temperature)
     if max_tokens is not None:
         payload["max_tokens"] = int(max_tokens)
+    if top_p is not None:
+        payload["top_p"] = float(top_p)
+    if repetition_penalty is not None:
+        payload["repetition_penalty"] = float(repetition_penalty)
     req = urllib.request.Request(
         config.DS_API_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -43,3 +51,4 @@ def chat(api_key, messages, model=None, temperature=None, max_tokens=None):
         "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
         "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
     }
+

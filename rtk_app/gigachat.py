@@ -61,12 +61,15 @@ def _get_access_token():
 
 
 
-def chat(messages, model=config.GC_MODEL, temperature=None, max_tokens=None):
+def chat(messages, model=config.GC_MODEL, temperature=None, max_tokens=None,
+         top_p=None, repetition_penalty=None):
     """Отправляет сообщения в GigaChat.
 
     Возвращает dict: content, prompt_tokens, completion_tokens.
     temperature — float или None; если задан — передаётся в запрос.
     max_tokens — int или None; если задан — ограничивает число токенов ответа.
+    top_p — float или None; nucleus sampling (GigaChat поддерживает).
+    repetition_penalty — float или None; штраф за повторы (1.0 — без штрафа).
     """
     token = _get_access_token()
     headers = {
@@ -79,6 +82,10 @@ def chat(messages, model=config.GC_MODEL, temperature=None, max_tokens=None):
         payload["temperature"] = float(temperature)
     if max_tokens is not None:
         payload["max_tokens"] = int(max_tokens)
+    if top_p is not None:
+        payload["top_p"] = float(top_p)
+    if repetition_penalty is not None:
+        payload["repetition_penalty"] = float(repetition_penalty)
     data = _post(
         config.GC_API_BASE,
         headers,
