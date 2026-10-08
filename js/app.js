@@ -56,11 +56,24 @@ import { apiGet, apiPost } from "./core/api.js";
     // Текущий диалог в окне: [{role:'user'|'assistant', content, html, answers}]
     var items = [];
 
-    // Состояние выбранных моделей: [{label, cls, on:bool, temp:number|null}]
+    // Состояние выбранных моделей: [{label, cls, on:bool, temp, topP,
+    // repPen, maxTokens, ctxWin}] — у каждой модели СВОИ параметры генерации.
     var modelState = [];
     // Значение температуры по умолчанию (минимальные/шаг берём из сервера).
     var DEFAULT_TEMP = 0.7;
     var TEMP_MIN = 0.0, TEMP_MAX = 1.0, TEMP_STEP = 0.05;
+    // top-p (nucleus sampling): 1.0 — выключено.
+    var DEFAULT_TOP_P = 1.0;
+    var TOP_P_MIN = 0.0, TOP_P_MAX = 1.0, TOP_P_STEP = 0.05;
+    // repetition penalty (штраф за повторы): 1.0 — без штрафа.
+    var DEFAULT_REP_PENALTY = 1.0;
+    var REP_PENALTY_MIN = 0.0, REP_PENALTY_MAX = 2.0, REP_PENALTY_STEP = 0.05;
+    // max_tokens: пустое поле = «авто» (число или null).
+    var MAX_TOKENS_MIN = 1, MAX_TOKENS_MAX = 100000, MAX_TOKENS_STEP = 50;
+    // Размер контекстного окна (токенов): пустое поле/0 = «авто».
+    var CTX_WINDOW_MIN = 0, CTX_WINDOW_MAX = 131072, CTX_WINDOW_STEP = 512;
+    // Ссылка на серверные границы (перезапишем из /api/model, если придут).
+    var serverParamLimits = null;
 
     // Состояние НАСТРОЙКИ сжатия: сколько последних сообщений хранить
     // полностью. Само сжатие (генерация summary) происходит автоматически
@@ -158,14 +171,57 @@ import { apiGet, apiPost } from "./core/api.js";
     }
 
     // ------------------------------------------------------------------
-    // Панель выбора моделей (кнопки-переключатели + температура)
+    // Панель выбора моделей (кнопки-переключатели + параметры генерации)
     // ------------------------------------------------------------------
+    // Строит блок числового параметра (label + input number) для модели.
+    // def — значение по умолчанию (null — «авто»: поле пустое), min/max/step —
+    // границы, roundTo — округление (1 — целые), title — подсказка.
+    function buildNumParam(text, st, key, def, min, max, step, roundTo, title) {
+        var box = document.createElement("div");
+        box.className = "model-param";
+        var lab = document.createElement("label");
+        lab.textContent = text;
+        var inp = document.createElement("input");
+        inp.type = "number";
+        inp.min = min;
+        inp.max = max;
+        inp.step = step;
+        inp.value = (def === null || def === undefined) ? "" : def;
+        inp.title = title || "";
+        inp.addEventListener("change", function () {
+            var raw = inp.value.trim();
+            if (raw === "") {
+                // Пустое поле = «авто» (не применять параметр).
+                inp.value = "";
+                st[key] = null;
+                return;
+            }
+            var v = parseFloat(raw);
+            if (isNaN(v)) { st[key] = null; inp.value = ""; return; }
+            if (v < min) v = min;
+            if (v > max) v = max;
+            if (roundTo === 1) v = Math.round(v);
+            else v = Math.round(v / roundTo) * roundTo;
+            inp.value = v;
+            st[key] = v;
+        });
+        box.appendChild(lab);
+        box.appendChild(inp);
+        return box;
+    }
+
     function buildModelControls(available) {
         if (!modelBox) return;
         modelBox.innerHTML = "";
         // По умолчанию модели ВЫКЛЮЧЕНЫ: пользователь сам включает нужные.
         modelState = available.map(function (m) {
-            return { label: m.label, cls: m.cls || "", on: false, temp: DEFAULT_TEMP };
+            return {
+                label: m.label, cls: m.cls || "", on: false,
+                temp: DEFAULT_TEMP, topP: DEFAULT_TOP_P,
+                repPen: DEFAULT_REP_PENALTY,
+                maxTokens: null,        // null = «авто» (пустое поле)
+                ctxWin: null            // null = «авто» (пустое поле)
+            };
         });
         modelState.forEach(function (st) {
             var wrap = document.createElement("div");
@@ -184,29 +240,26 @@ import { apiGet, apiPost } from "./core/api.js";
             });
             wrap.appendChild(btn);
 
-            // параметр температура
-            var tempWrap = document.createElement("div");
-            tempWrap.className = "model-temp";
-            var lab = document.createElement("label");
-            lab.textContent = "temp";
-            var inp = document.createElement("input");
-            inp.type = "number";
-            inp.min = TEMP_MIN;
-            inp.max = TEMP_MAX;
-            inp.step = TEMP_STEP;
-            inp.value = st.temp;
-            inp.title = "Температура генерации (0 – строго, выше – разнообразнее)";
-            inp.addEventListener("change", function () {
-                var v = parseFloat(inp.value);
-                if (isNaN(v)) v = DEFAULT_TEMP;
-                if (v < TEMP_MIN) v = TEMP_MIN;
-                if (v > TEMP_MAX) v = TEMP_MAX;
-                inp.value = v;
-                st.temp = v;
-            });
-            tempWrap.appendChild(lab);
-            tempWrap.appendChild(inp);
-            wrap.appendChild(tempWrap);
+            // Параметры генерации для этой модели (одна строка полей):
+            // temperature, top-p, repetition penalty, max_tokens, контекст.
+            var params = document.createElement("div");
+            params.className = "model-params";
+            params.appendChild(buildNumParam("temp", st, "temp", DEFAULT_TEMP,
+                TEMP_MIN, TEMP_MAX, TEMP_STEP, 0.01,
+                "Температура генерации (0 – строго, выше – разнообразнее)"));
+            params.appendChild(buildNumParam("top-p", st, "topP", DEFAULT_TOP_P,
+                TOP_P_MIN, TOP_P_MAX, TOP_P_STEP, 0.01,
+                "Top-p (nucleus): 1.0 — выключено; 0.9–0.95 — умеренное разнообразие"));
+            params.appendChild(buildNumParam("rep", st, "repPen", DEFAULT_REP_PENALTY,
+                REP_PENALTY_MIN, REP_PENALTY_MAX, REP_PENALTY_STEP, 0.01,
+                "Repetition penalty (штраф за повторы): 1.0 — без штрафа"));
+            params.appendChild(buildNumParam("max", st, "maxTokens", null,
+                MAX_TOKENS_MIN, MAX_TOKENS_MAX, MAX_TOKENS_STEP, 1,
+                "Максимум новых токенов ответа (пусто – авто)"));
+            params.appendChild(buildNumParam("ctx", st, "ctxWin", null,
+                CTX_WINDOW_MIN, CTX_WINDOW_MAX, CTX_WINDOW_STEP, 1,
+                "Размер контекстного окна в токенах (пусто/0 – авто)"));
+            wrap.appendChild(params);
 
             modelBox.appendChild(wrap);
         });
@@ -247,10 +300,22 @@ import { apiGet, apiPost } from "./core/api.js";
     }
 
     // Собирает список выбранных моделей для отправки на сервер.
+    // У каждой модели — СВОИ параметры генерации (temp/top_p/rep/max/ctx).
+    // Пустые (null) поля означают «не применять параметр» — сервер сам
+    // подставит значение по умолчанию модели.
     function selectedModelsPayload() {
         return modelState
             .filter(function (m) { return m.on; })
-            .map(function (m) { return { label: m.label, temperature: m.temp }; });
+            .map(function (m) {
+                return {
+                    label: m.label,
+                    temperature: m.temp,
+                    top_p: m.topP,
+                    repetition_penalty: m.repPen,
+                    max_tokens: m.maxTokens,
+                    context_window: m.ctxWin
+                };
+            });
     }
 
     // ------------------------------------------------------------------

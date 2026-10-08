@@ -413,8 +413,9 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 }
 .model-ctrl {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 6px 8px;
     border: 1px solid #dfe4f0;
     border-radius: 9px;
     padding: 6px 10px;
@@ -451,6 +452,35 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
     background: var(--accent);
 }
 .model-ctrl.inactive { opacity: .55; filter: grayscale(.4); }
+/* Ряд числовых параметров генерации в карточке модели:
+   temp / top-p / rep / max_tokens / ctx. Переносим при нехватке ширины. */
+.model-params {
+    flex: 1 1 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+}
+.model-param {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: .68rem;
+    color: #5f6a85;
+}
+.model-param label { cursor: default; white-space: nowrap; }
+.model-param input {
+    width: 58px;
+    font: inherit;
+    font-size: .72rem;
+    padding: 2px 5px;
+    border: 1px solid #cdd4e6;
+    border-radius: 5px;
+    background: #fff;
+    color: #223;
+}
+.model-param input::placeholder { color: #a7b0c6; }
+/* Одиночный параметр «temp» — старый класс (совместимость). */
 .model-temp {
     display: flex;
     align-items: center;
